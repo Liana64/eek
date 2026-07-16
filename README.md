@@ -7,7 +7,7 @@ We recommend that you deploy on Kubernetes and apply a networkpolicy. Or don't, 
 ## Deployment
 
 ```sh
-eek config.toml                          # or EEK_CONFIG=config.toml
+eek config.toml                         # or EEK_CONFIG=config.toml
 ```
 
 ## Config
@@ -16,11 +16,11 @@ See `config.example.toml`
 
 ```toml
 listen = "127.0.0.1:8551"
-gateway_keys = ["${GATEWAY_KEY}"]        # clients send Authorization: Bearer <key>
+gateway_keys = ["${GATEWAY_KEY}"]       # clients send Authorization: Bearer <key>
 
 [providers.anthropic]
-base_url = "https://api.anthropic.com"   # https only
-auth_header = "x-api-key"                # default "authorization" (sent as Bearer <api_key>)
+base_url = "https://api.anthropic.com"  # https only
+auth_header = "x-api-key"               # authorization sent as Bearer <api_key>
 api_key = "${ANTHROPIC_API_KEY}"
 ```
 
