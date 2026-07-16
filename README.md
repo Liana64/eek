@@ -29,4 +29,4 @@ api_key = "${ANTHROPIC_API_KEY}"
 - `POST /<provider>/v1/{chat/completions,messages,responses}` and eek! swaps your gateway key for the provider's key and forwards the request.
 - `GET /healthz` returns `ok`.
 
-MIT.
+MIT license
