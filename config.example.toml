@@ -1,0 +1,16 @@
+# eek config.toml or export EEK_CONFIG
+# routes: POST /<name>/v1/{chat/completions,messages,responses}
+
+listen = "127.0.0.1:8551"
+gateway_keys = ["${GATEWAY_KEY}"]
+max_body_bytes = 33554432
+header_timeout_secs = 300
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+auth_header = "x-api-key"
+api_key = "${ANTHROPIC_API_KEY}"
+
+[providers.openai]
+base_url = "https://api.openai.com"
+api_key = "${OPENAI_API_KEY}"
