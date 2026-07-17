@@ -133,7 +133,6 @@ async fn forward(
     sanitize(&mut parts.headers);
     parts.headers.remove(HOST);
     parts.headers.remove(AUTHORIZATION);
-    parts.headers.remove(&up.auth_name);
     parts
         .headers
         .insert(up.auth_name.clone(), up.auth_value.clone());
@@ -247,18 +246,16 @@ fn sanitize(headers: &mut HeaderMap) {
         .flat_map(|v| v.split(','))
         .filter_map(|t| HeaderName::try_from(t.trim()).ok())
         .collect();
-    for h in named {
-        headers.remove(h);
-    }
-    for h in HOP_BY_HOP {
-        headers.remove(h);
-    }
-    let proxied: Vec<HeaderName> = headers
+    let drop: Vec<HeaderName> = headers
         .keys()
-        .filter(|k| k.as_str().starts_with("proxy-"))
+        .filter(|k| {
+            named.contains(k)
+                || HOP_BY_HOP.contains(&k.as_str())
+                || k.as_str().starts_with("proxy-")
+        })
         .cloned()
         .collect();
-    for h in proxied {
+    for h in drop {
         headers.remove(h);
     }
 }
