@@ -1,9 +1,8 @@
-# Eek!
+# Tiny, like a mouse, key-brokering proxy for LLM providers
 
-Tiny (like a mouse) key-brokering proxy for LLM providers, configurable using
-TOML/ENV. Limited to chat/completions, messages, and responses with upstream
-requests over TLS. Inbound requests to the proxy are cleartext, so deploy on
-kubernetes with TLS-terminating ingress (and probably a networkpolicy).
+Configurable using TOML/ENV. Limited to chat/completions, messages, and responses
+with upstream requests over TLS. Inbound requests to the proxy are cleartext, so
+deploy on kubernetes with TLS-terminating ingress (and probably a networkpolicy).
 
 Dependencies are: hyper, rustls, and tokio. Grrr, no npm.
 
