@@ -28,7 +28,7 @@ api_key = "${ANTHROPIC_API_KEY}"
 ```
 
 Gateway key(s) can be any string longer than sixteen characters. We recommend
-the use of `openssl rand -hex 32`.
+`openssl rand -hex 32`.
 
 ## Routes
 
