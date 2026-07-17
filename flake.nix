@@ -39,8 +39,13 @@
             mainProgram = "eek";
           };
         };
+        image = pkgs.dockerTools.buildLayeredImage {
+          name = "eek";
+          tag = "latest";
+          config.Cmd = [(pkgs.lib.getExe eek)];
+        };
       in {
-        inherit eek;
+        inherit eek image;
         default = eek;
       }
     );
