@@ -43,6 +43,7 @@
           name = "eek";
           tag = "latest";
           config.Cmd = [(pkgs.lib.getExe eek)];
+          config.User = "65534:65534";
         };
       in {
         inherit eek image;
