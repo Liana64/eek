@@ -80,10 +80,7 @@ fn parse_with(raw: &str, lookup: impl Fn(&str) -> Option<String>) -> Result<Conf
     Ok(cfg)
 }
 
-fn interpolate(
-    raw: &str,
-    lookup: &impl Fn(&str) -> Option<String>,
-) -> Result<String, String> {
+fn interpolate(raw: &str, lookup: &impl Fn(&str) -> Option<String>) -> Result<String, String> {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
     while let Some(i) = rest.find("${") {
@@ -166,10 +163,9 @@ mod tests {
 
     #[test]
     fn interpolates_env_vars() {
-        let cfg = parse_with(
-            &MINIMAL.replace("sk-test", "${AI_GW_TEST_KEY}"),
-            |v| (v == "AI_GW_TEST_KEY").then(|| "sk-from-env".into()),
-        )
+        let cfg = parse_with(&MINIMAL.replace("sk-test", "${AI_GW_TEST_KEY}"), |v| {
+            (v == "AI_GW_TEST_KEY").then(|| "sk-from-env".into())
+        })
         .unwrap();
         assert_eq!(cfg.providers["anthropic"].api_key, "sk-from-env");
     }

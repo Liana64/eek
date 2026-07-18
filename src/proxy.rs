@@ -2,17 +2,17 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
 use hyper::header::{
-    HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE,
-    HOST,
+    AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderMap, HeaderName,
+    HeaderValue,
 };
 use hyper::{Method, Request, Response, StatusCode, Uri};
 use tokio::time::Sleep;
