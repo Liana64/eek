@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,6 +15,7 @@ use hyper::header::{
     HOST,
 };
 use hyper::{Method, Request, Response, StatusCode, Uri};
+use tokio::time::Sleep;
 
 use crate::config::{Config, Provider};
 
@@ -39,6 +41,7 @@ pub struct Gateway {
     keys: Vec<String>,
     max_body: usize,
     upstream_header_timeout: Duration,
+    upstream_idle_timeout: Duration,
     pub header_read_timeout: Duration,
     pub routes: BTreeMap<String, Upstream>,
     client: Client,
@@ -58,6 +61,7 @@ impl Gateway {
             keys: cfg.gateway_keys,
             max_body: cfg.max_body_bytes,
             upstream_header_timeout: Duration::from_secs(cfg.upstream_header_timeout_secs),
+            upstream_idle_timeout: Duration::from_secs(cfg.upstream_idle_timeout_secs),
             header_read_timeout: Duration::from_secs(cfg.header_read_timeout_secs),
             routes,
             client,
@@ -152,7 +156,7 @@ async fn forward(
         Ok(Ok(resp)) => {
             let (mut parts, body) = resp.into_parts();
             sanitize(&mut parts.headers);
-            Response::from_parts(parts, body.map_err(BoxError::from).boxed())
+            Response::from_parts(parts, IdleBody::new(body, gw.upstream_idle_timeout).boxed())
         }
         Ok(Err(_)) if tripped.load(Ordering::Relaxed) => {
             text(StatusCode::PAYLOAD_TOO_LARGE, "body too large")
@@ -205,14 +209,68 @@ impl Body for CappedBody {
     }
 }
 
+struct IdleBody<B> {
+    inner: B,
+    idle: Duration,
+    sleep: Pin<Box<Sleep>>,
+}
+
+impl<B> IdleBody<B> {
+    fn new(inner: B, idle: Duration) -> Self {
+        Self {
+            inner,
+            idle,
+            sleep: Box::pin(tokio::time::sleep(idle)),
+        }
+    }
+}
+
+impl<B: Body<Data = Bytes> + Unpin> Body for IdleBody<B>
+where
+    B::Error: Into<BoxError>,
+{
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if let Poll::Ready(opt) = Pin::new(&mut this.inner).poll_frame(cx) {
+            this.sleep
+                .as_mut()
+                .reset(tokio::time::Instant::now() + this.idle);
+            return Poll::Ready(opt.map(|r| r.map_err(Into::into)));
+        }
+        ready!(this.sleep.as_mut().poll(cx));
+        Poll::Ready(Some(Err("upstream idle timeout".into())))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
 fn authorized(headers: &HeaderMap, keys: &[String]) -> bool {
     let token = headers
         .get(AUTHORIZATION)
         .map(HeaderValue::as_bytes)
-        .and_then(|v| v.strip_prefix(b"Bearer "))
+        .and_then(bearer_token)
         .unwrap_or_default();
     keys.iter()
         .fold(false, |ok, k| ok | ct_eq(k.as_bytes(), token))
+}
+
+fn bearer_token(v: &[u8]) -> Option<&[u8]> {
+    let end = v.iter().position(|&b| b == b' ')?;
+    v[..end]
+        .eq_ignore_ascii_case(b"bearer")
+        .then_some(&v[end + 1..])
 }
 
 // constant-time, length-hiding: do not branch on either length.
@@ -409,5 +467,55 @@ mod tests {
         assert_eq!(u.to_string(), "https://x.test/v1/messages?beta=true");
         let u = upstream_uri("https://x.test", "v1/messages", None).unwrap();
         assert_eq!(u.to_string(), "https://x.test/v1/messages");
+    }
+
+    struct Stuck;
+
+    impl Body for Stuck {
+        type Data = Bytes;
+        type Error = BoxError;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_body_errors_on_stuck_upstream() {
+        assert!(
+            IdleBody::new(Stuck, Duration::from_millis(20))
+                .collect()
+                .await
+                .is_err(),
+            "expected idle timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_body_passes_frames() {
+        let c = IdleBody::new(
+            Full::new(Bytes::from_static(b"hi")),
+            Duration::from_secs(60),
+        )
+        .collect()
+        .await
+        .unwrap();
+        assert_eq!(c.to_bytes().as_ref(), &b"hi"[..]);
+    }
+
+    #[test]
+    fn auth_accepts_case_insensitive_scheme() {
+        let keys = vec!["0123456789abcdef".to_string()];
+        for scheme in ["bearer", "BEARER", "Bearer"] {
+            let mut h = HeaderMap::new();
+            h.insert(
+                AUTHORIZATION,
+                format!("{scheme} 0123456789abcdef").parse().unwrap(),
+            );
+            assert!(authorized(&h, &keys), "{scheme}");
+        }
     }
 }

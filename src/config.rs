@@ -13,6 +13,8 @@ pub struct Config {
     pub max_body_bytes: usize,
     #[serde(default = "defaults::upstream_header_timeout_secs")]
     pub upstream_header_timeout_secs: u64,
+    #[serde(default = "defaults::upstream_idle_timeout_secs")]
+    pub upstream_idle_timeout_secs: u64,
     #[serde(default = "defaults::header_read_timeout_secs")]
     pub header_read_timeout_secs: u64,
     pub providers: BTreeMap<String, Provider>,
@@ -42,6 +44,10 @@ mod defaults {
         300
     }
 
+    pub fn upstream_idle_timeout_secs() -> u64 {
+        90
+    }
+
     pub fn header_read_timeout_secs() -> u64 {
         30
     }
@@ -57,27 +63,34 @@ pub fn load(path: &str) -> Result<Config, String> {
 }
 
 fn parse(raw: &str) -> Result<Config, String> {
+    parse_with(raw, |v| std::env::var(v).ok())
+}
+
+fn parse_with(raw: &str, lookup: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
     let mut cfg: Config = toml::from_str(raw).map_err(|e| e.to_string())?;
     for k in &mut cfg.gateway_keys {
-        *k = interpolate(k)?;
+        *k = interpolate(k, &lookup)?;
     }
     for p in cfg.providers.values_mut() {
         for s in [&mut p.base_url, &mut p.auth_header, &mut p.api_key] {
-            *s = interpolate(s)?;
+            *s = interpolate(s, &lookup)?;
         }
     }
     validate(&cfg)?;
     Ok(cfg)
 }
 
-fn interpolate(raw: &str) -> Result<String, String> {
+fn interpolate(
+    raw: &str,
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<String, String> {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
     while let Some(i) = rest.find("${") {
         out.push_str(&rest[..i]);
         let end = rest[i..].find('}').ok_or("unclosed ${")? + i;
         let var = &rest[i + 2..end];
-        out.push_str(&std::env::var(var).map_err(|_| format!("${{{var}}}: not set"))?);
+        out.push_str(&lookup(var).ok_or_else(|| format!("${{{var}}}: not set"))?);
         rest = &rest[end + 1..];
     }
     out.push_str(rest);
@@ -146,14 +159,18 @@ mod tests {
         assert_eq!(cfg.listen, ([127, 0, 0, 1], 8551).into());
         assert_eq!(cfg.max_body_bytes, 32 * 1024 * 1024);
         assert_eq!(cfg.upstream_header_timeout_secs, 300);
+        assert_eq!(cfg.upstream_idle_timeout_secs, 90);
         assert_eq!(cfg.header_read_timeout_secs, 30);
         assert_eq!(cfg.providers["anthropic"].auth_header, "authorization");
     }
 
     #[test]
     fn interpolates_env_vars() {
-        std::env::set_var("AI_GW_TEST_KEY", "sk-from-env");
-        let cfg = parse(&MINIMAL.replace("sk-test", "${AI_GW_TEST_KEY}")).unwrap();
+        let cfg = parse_with(
+            &MINIMAL.replace("sk-test", "${AI_GW_TEST_KEY}"),
+            |v| (v == "AI_GW_TEST_KEY").then(|| "sk-from-env".into()),
+        )
+        .unwrap();
         assert_eq!(cfg.providers["anthropic"].api_key, "sk-from-env");
     }
 
