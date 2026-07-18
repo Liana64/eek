@@ -122,8 +122,8 @@ fn validate(cfg: &Config) -> Result<(), String> {
             return Err(format!("providers.{name}: base_url must be https://..."));
         }
         match p.base_url.parse::<hyper::Uri>() {
-            Ok(u) if u.query().is_none() && matches!(u.path(), "" | "/") => {}
-            _ => return Err(format!("providers.{name}: base_url must be a bare origin")),
+            Ok(u) if u.query().is_none() => {}
+            _ => return Err(format!("providers.{name}: base_url must not carry a query")),
         }
         if p.api_key.is_empty() {
             return Err(format!("providers.{name}: api_key empty"));
@@ -209,9 +209,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_base_url_with_path() {
-        let raw = MINIMAL.replace("https://api.anthropic.com", "https://api.anthropic.com/v1");
-        assert!(err(parse(&raw)).contains("bare origin"));
+    fn accepts_base_url_with_path_prefix() {
+        let raw = MINIMAL.replace(
+            "https://api.anthropic.com",
+            "https://api.fireworks.ai/inference",
+        );
+        assert_eq!(
+            parse(&raw).unwrap().providers["anthropic"].base_url,
+            "https://api.fireworks.ai/inference"
+        );
+    }
+
+    #[test]
+    fn rejects_base_url_with_query() {
+        let raw = MINIMAL.replace(
+            "https://api.anthropic.com",
+            "https://api.anthropic.com/?x=1",
+        );
+        assert!(err(parse(&raw)).contains("query"));
     }
 
     #[test]
