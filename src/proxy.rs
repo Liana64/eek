@@ -219,8 +219,8 @@ fn authorized(headers: &HeaderMap, keys: &[String]) -> bool {
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     let mut diff = a.len() ^ b.len();
     for i in 0..KEY_CMP_MAX {
-        diff |= (a.get(i).copied().unwrap_or(0) as usize)
-            ^ (b.get(i).copied().unwrap_or(0) as usize);
+        diff |=
+            (a.get(i).copied().unwrap_or(0) as usize) ^ (b.get(i).copied().unwrap_or(0) as usize);
     }
     diff == 0
 }
