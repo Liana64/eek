@@ -4,7 +4,8 @@
 listen = "127.0.0.1:8551"
 gateway_keys = ["${GATEWAY_KEY}"]
 max_body_bytes = 33554432
-header_timeout_secs = 300
+upstream_header_timeout_secs = 300
+header_read_timeout_secs = 30
 
 [providers.anthropic]
 base_url = "https://api.anthropic.com"

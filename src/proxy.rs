@@ -14,7 +14,6 @@ use hyper::header::{
     HOST,
 };
 use hyper::{Method, Request, Response, StatusCode, Uri};
-use subtle::ConstantTimeEq;
 
 use crate::config::{Config, Provider};
 
@@ -33,12 +32,14 @@ const HOP_BY_HOP: [&str; 6] = [
     "transfer-encoding",
     "upgrade",
 ];
+pub const KEY_CMP_MAX: usize = 256;
 
 pub struct Gateway {
     pub listen: SocketAddr,
     keys: Vec<String>,
     max_body: usize,
-    header_timeout: Duration,
+    upstream_header_timeout: Duration,
+    pub header_read_timeout: Duration,
     pub routes: BTreeMap<String, Upstream>,
     client: Client,
 }
@@ -56,7 +57,8 @@ impl Gateway {
             listen: cfg.listen,
             keys: cfg.gateway_keys,
             max_body: cfg.max_body_bytes,
-            header_timeout: Duration::from_secs(cfg.header_timeout_secs),
+            upstream_header_timeout: Duration::from_secs(cfg.upstream_header_timeout_secs),
+            header_read_timeout: Duration::from_secs(cfg.header_read_timeout_secs),
             routes,
             client,
         })
@@ -146,7 +148,7 @@ async fn forward(
     let req = Request::from_parts(parts, body);
 
     // timeout covers response headers only, bodies stream undeadlined (SSE)
-    match tokio::time::timeout(gw.header_timeout, gw.client.request(req)).await {
+    match tokio::time::timeout(gw.upstream_header_timeout, gw.client.request(req)).await {
         Ok(Ok(resp)) => {
             let (mut parts, body) = resp.into_parts();
             sanitize(&mut parts.headers);
@@ -210,8 +212,17 @@ fn authorized(headers: &HeaderMap, keys: &[String]) -> bool {
         .and_then(|v| v.strip_prefix(b"Bearer "))
         .unwrap_or_default();
     keys.iter()
-        .fold(0u8, |ok, k| ok | k.as_bytes().ct_eq(token).unwrap_u8())
-        != 0
+        .fold(false, |ok, k| ok | ct_eq(k.as_bytes(), token))
+}
+
+// constant-time, length-hiding: do not branch on either length.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = a.len() ^ b.len();
+    for i in 0..KEY_CMP_MAX {
+        diff |= (a.get(i).copied().unwrap_or(0) as usize)
+            ^ (b.get(i).copied().unwrap_or(0) as usize);
+    }
+    diff == 0
 }
 
 fn match_route<'r>(
@@ -364,6 +375,19 @@ mod tests {
         assert!(!authorized(&h, &keys), "missing Bearer prefix");
         h.remove(AUTHORIZATION);
         assert!(!authorized(&h, &keys));
+    }
+
+    #[test]
+    fn ct_eq_compares_without_length_leak() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(ct_eq(b"", b""));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"ab"));
+        assert!(!ct_eq(b"ab", b"abc"));
+        assert!(!ct_eq(b"abc", b"abcd"));
+        assert!(!ct_eq(b"abcd", b"abc"));
+        assert!(!ct_eq(b"abc", b""));
+        assert!(!ct_eq(b"", b"abc"));
     }
 
     #[test]

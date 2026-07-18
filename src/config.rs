@@ -11,8 +11,10 @@ pub struct Config {
     pub gateway_keys: Vec<String>,
     #[serde(default = "defaults::max_body_bytes")]
     pub max_body_bytes: usize,
-    #[serde(default = "defaults::header_timeout_secs")]
-    pub header_timeout_secs: u64,
+    #[serde(default = "defaults::upstream_header_timeout_secs")]
+    pub upstream_header_timeout_secs: u64,
+    #[serde(default = "defaults::header_read_timeout_secs")]
+    pub header_read_timeout_secs: u64,
     pub providers: BTreeMap<String, Provider>,
 }
 
@@ -36,8 +38,12 @@ mod defaults {
         32 * 1024 * 1024
     }
 
-    pub fn header_timeout_secs() -> u64 {
+    pub fn upstream_header_timeout_secs() -> u64 {
         300
+    }
+
+    pub fn header_read_timeout_secs() -> u64 {
+        30
     }
 
     pub fn auth_header() -> String {
@@ -85,6 +91,16 @@ fn validate(cfg: &Config) -> Result<(), String> {
     if cfg.gateway_keys.iter().any(|k| k.len() < 16) {
         return Err("gateway_keys: keys must be 16+ chars".into());
     }
+    if cfg
+        .gateway_keys
+        .iter()
+        .any(|k| k.len() > crate::proxy::KEY_CMP_MAX)
+    {
+        return Err(format!(
+            "gateway_keys: keys must be <= {} chars",
+            crate::proxy::KEY_CMP_MAX
+        ));
+    }
     if cfg.providers.is_empty() {
         return Err("providers: at least one required".into());
     }
@@ -96,8 +112,8 @@ fn validate(cfg: &Config) -> Result<(), String> {
             return Err(format!("providers.{name}: base_url must be https://..."));
         }
         match p.base_url.parse::<hyper::Uri>() {
-            Ok(u) if u.query().is_none() => {}
-            _ => return Err(format!("providers.{name}: base_url invalid")),
+            Ok(u) if u.query().is_none() && matches!(u.path(), "" | "/") => {}
+            _ => return Err(format!("providers.{name}: base_url must be a bare origin")),
         }
         if p.api_key.is_empty() {
             return Err(format!("providers.{name}: api_key empty"));
@@ -129,7 +145,8 @@ mod tests {
         let cfg = parse(MINIMAL).unwrap();
         assert_eq!(cfg.listen, ([127, 0, 0, 1], 8551).into());
         assert_eq!(cfg.max_body_bytes, 32 * 1024 * 1024);
-        assert_eq!(cfg.header_timeout_secs, 300);
+        assert_eq!(cfg.upstream_header_timeout_secs, 300);
+        assert_eq!(cfg.header_read_timeout_secs, 30);
         assert_eq!(cfg.providers["anthropic"].auth_header, "authorization");
     }
 
@@ -167,9 +184,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_overlong_gateway_keys() {
+        let long = "x".repeat(crate::proxy::KEY_CMP_MAX + 1);
+        assert!(err(parse(&MINIMAL.replace("0123456789abcdef", &long))).contains("<="));
+    }
+
+    #[test]
     fn rejects_non_https_base_url() {
         let raw = MINIMAL.replace("https://api.anthropic.com", "http://api.anthropic.com");
         assert!(err(parse(&raw)).contains("https"));
+    }
+
+    #[test]
+    fn rejects_base_url_with_path() {
+        let raw = MINIMAL.replace("https://api.anthropic.com", "https://api.anthropic.com/v1");
+        assert!(err(parse(&raw)).contains("bare origin"));
     }
 
     #[test]

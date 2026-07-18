@@ -8,8 +8,8 @@ use std::time::Duration;
 use hyper::service::service_fn;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto;
+use hyper::server::conn::http1;
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{signal, SignalKind};
@@ -36,7 +36,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let tls = hyper_rustls::HttpsConnectorBuilder::new()
         .with_provider_and_webpki_roots(rustls::crypto::ring::default_provider())?
         .https_only()
-        .enable_all_versions()
+        .enable_http1()
         .wrap_connector(http);
     let client = Client::builder(TokioExecutor::new()).build(tls);
 
@@ -51,7 +51,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         gw.routes.len()
     );
 
-    let server = auto::Builder::new(TokioExecutor::new());
+    let mut server = http1::Builder::new();
+    server
+        .timer(TokioTimer::new())
+        .header_read_timeout(gw.header_read_timeout);
     let graceful = GracefulShutdown::new();
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sigterm = signal(SignalKind::terminate())?;
@@ -72,7 +75,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     async move { Ok::<_, Infallible>(proxy::handle(&gw, req).await) }
                 });
                 let conn = server.serve_connection(TokioIo::new(stream), svc);
-                let conn = graceful.watch(conn.into_owned());
+                let conn = graceful.watch(conn);
                 tokio::spawn(async move {
                     let _ = conn.await;
                 });

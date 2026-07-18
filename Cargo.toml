@@ -1,23 +1,21 @@
 [package]
 name = "eek"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "eek! lightweight LLM proxy"
 
 [dependencies]
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "signal", "time", "macros"] }
-hyper = { version = "1", default-features = false, features = ["http1", "http2", "client", "server"] }
-hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "server-auto", "server-graceful", "http1", "http2", "tokio"] }
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "webpki-tokio", "ring", "tls12"] }
+hyper = { version = "1", default-features = false, features = ["http1", "client", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "server-graceful", "http1", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "webpki-tokio", "ring", "tls12"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 http-body-util = "0.1"
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 toml = { version = "0.8", default-features = false, features = ["parse"] }
-subtle = { version = "2", default-features = false }
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
