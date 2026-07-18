@@ -35,3 +35,7 @@ Gateway key(s) can be any string longer than sixteen characters. We recommend
 your gateway key for the provider's key and forwards the request.
 
 - `GET /healthz` returns `ok`.
+
+## Demo
+
+[![asciicast](https://asciinema.org/a/EvQAFKEp9VuhwbHY.svg)](https://asciinema.org/a/EvQAFKEp9VuhwbHY)
