@@ -14,6 +14,8 @@ use hyper_util::server::graceful::GracefulShutdown;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{signal, SignalKind};
 
+const MAX_CONNECTIONS: usize = 4096;
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("eek: {e}");
@@ -68,6 +70,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                 };
+                if graceful.count() >= MAX_CONNECTIONS {
+                    eprintln!("connection limit reached, dropping");
+                    let _ = stream.try_write(
+                        b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                    );
+                    continue;
+                }
                 let _ = stream.set_nodelay(true);
                 let gw = gw.clone();
                 let svc = service_fn(move |req| {
