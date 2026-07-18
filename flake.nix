@@ -20,7 +20,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
         eek = pkgs.rustPlatform.buildRustPackage {
           pname = "eek";
-          version = "0.1.0";
+          version = "0.3.0";
 
           src = pkgs.lib.fileset.toSource {
             root = ./.;
@@ -34,9 +34,9 @@
           cargoLock.lockFile = ./Cargo.lock;
 
           meta = {
-            description = "eek! lightweight LLM proxy";
-            license = pkgs.lib.licenses.mit;
             mainProgram = "eek";
+            description = "eek! lightweight LLM proxy";
+            license = pkgs.lib.licenses.gpl2Only;
           };
         };
         image = pkgs.dockerTools.buildLayeredImage {
