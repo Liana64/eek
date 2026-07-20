@@ -69,11 +69,11 @@ fn parse(raw: &str) -> Result<Config, String> {
 fn parse_with(raw: &str, lookup: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
     let mut cfg: Config = toml::from_str(raw).map_err(|e| e.to_string())?;
     for k in &mut cfg.gateway_keys {
-        *k = interpolate(k, &lookup)?;
+        *k = interpolate(k, &lookup)?.trim().to_string();
     }
     for p in cfg.providers.values_mut() {
         for s in [&mut p.base_url, &mut p.auth_header, &mut p.api_key] {
-            *s = interpolate(s, &lookup)?;
+            *s = interpolate(s, &lookup)?.trim().to_string();
         }
     }
     validate(&cfg)?;
