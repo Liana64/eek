@@ -12,7 +12,9 @@ header_read_timeout_secs = 30
 base_url = "https://api.anthropic.com"
 auth_header = "x-api-key"
 api_key = "${ANTHROPIC_API_KEY}"
+protocol = "anthropic"
 
 [providers.openai]
 base_url = "https://api.openai.com"
 api_key = "${OPENAI_API_KEY}"
+protocol = "openai"

@@ -24,6 +24,7 @@ gateway_keys = ["${GATEWAY_KEY}"]      # clients send Authorization: Bearer <key
 base_url = "https://api.anthropic.com" # https only
 auth_header = "x-api-key"              # authorization sent as Bearer <api_key>
 api_key = "${ANTHROPIC_API_KEY}"
+protocol = "anthropic"                 # optional; enables translation (see below)
 ```
 
 Gateway key(s) can be any string longer than sixteen characters. We recommend
@@ -35,6 +36,10 @@ Gateway key(s) can be any string longer than sixteen characters. We recommend
 your gateway key for the provider's key and forwards the request.
 
 - `GET /healthz` returns `ok`.
+
+## Translation
+
+Translate between anthropic and openai protocols.
 
 ## Demo
 

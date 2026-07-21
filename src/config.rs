@@ -27,6 +27,15 @@ pub struct Provider {
     #[serde(default = "defaults::auth_header")]
     pub auth_header: String,
     pub api_key: String,
+    #[serde(default)]
+    pub protocol: Option<Protocol>,
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum Protocol {
+    Anthropic,
+    Openai,
 }
 
 mod defaults {
@@ -233,5 +242,19 @@ mod tests {
     fn rejects_empty_providers() {
         let raw = "gateway_keys = [\"0123456789abcdef\"]\n[providers]";
         assert!(err(parse(raw)).contains("providers"));
+    }
+
+    #[test]
+    fn protocol_defaults_none_and_parses() {
+        assert!(
+            parse(MINIMAL).unwrap().providers["anthropic"]
+                .protocol
+                .is_none()
+        );
+        let raw = format!("{MINIMAL}protocol = \"openai\"\n");
+        assert_eq!(
+            parse(&raw).unwrap().providers["anthropic"].protocol,
+            Some(Protocol::Openai)
+        );
     }
 }

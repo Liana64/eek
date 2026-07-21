@@ -11,18 +11,20 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
 use hyper::header::{
-    AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderMap, HeaderName,
-    HeaderValue,
+    ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE,
+    HOST, HeaderMap, HeaderName, HeaderValue,
 };
 use hyper::{Method, Request, Response, StatusCode, Uri};
 use tokio::time::Sleep;
 
-use crate::config::{Config, Provider};
+use crate::config::{Config, Protocol, Provider};
+use crate::translate::{self, Dir, SseXlate};
 
 type HttpsConnector =
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
-pub type Client = hyper_util::client::legacy::Client<HttpsConnector, CappedBody>;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub type ReqBody = BoxBody<Bytes, BoxError>;
+pub type Client = hyper_util::client::legacy::Client<HttpsConnector, ReqBody>;
 pub type ResBody = BoxBody<Bytes, BoxError>;
 
 const ALLOWED: [&str; 3] = ["v1/chat/completions", "v1/messages", "v1/responses"];
@@ -51,6 +53,7 @@ pub struct Upstream {
     base_url: String,
     auth_name: HeaderName,
     auth_value: HeaderValue,
+    protocol: Option<Protocol>,
 }
 
 impl Gateway {
@@ -89,6 +92,7 @@ fn build_routes(
                 base_url: p.base_url.trim_end_matches('/').to_string(),
                 auth_name,
                 auth_value,
+                protocol: p.protocol,
             };
             Ok((name.clone(), upstream))
         })
@@ -123,7 +127,39 @@ async fn route(gw: &Gateway, req: Request<Incoming>) -> Response<ResBody> {
     if declared_len(req.headers()).is_some_and(|n| n > gw.max_body) {
         return text(StatusCode::PAYLOAD_TOO_LARGE, "body too large");
     }
-    forward(gw, upstream, endpoint, req).await
+    match upstream.protocol {
+        None => forward(gw, upstream, endpoint, req).await,
+        Some(native) => match translate_dir(native, endpoint) {
+            Route::Passthrough => forward(gw, upstream, endpoint, req).await,
+            Route::Translate(dir) => forward_translated(gw, upstream, dir, req).await,
+            Route::Unsupported => text(
+                StatusCode::NOT_IMPLEMENTED,
+                "protocol translation unsupported for route",
+            ),
+        },
+    }
+}
+
+enum Route {
+    Passthrough,
+    Translate(Dir),
+    Unsupported,
+}
+
+fn translate_dir(native: Protocol, endpoint: &str) -> Route {
+    let client = match endpoint {
+        "v1/messages" => Protocol::Anthropic,
+        "v1/chat/completions" | "v1/responses" => Protocol::Openai,
+        _ => return Route::Unsupported,
+    };
+    match (native, client) {
+        (n, c) if n == c => Route::Passthrough,
+        (Protocol::Openai, Protocol::Anthropic) => Route::Translate(Dir::MessagesToChat),
+        (Protocol::Anthropic, Protocol::Openai) if endpoint == "v1/chat/completions" => {
+            Route::Translate(Dir::ChatToMessages)
+        }
+        _ => Route::Unsupported,
+    }
 }
 
 async fn forward(
@@ -149,7 +185,7 @@ async fn forward(
         remaining: gw.max_body,
         tripped: tripped.clone(),
     };
-    let req = Request::from_parts(parts, body);
+    let req = Request::from_parts(parts, body.boxed());
 
     // timeout covers response headers only, bodies stream undeadlined (SSE)
     match tokio::time::timeout(gw.upstream_header_timeout, gw.client.request(req)).await {
@@ -167,6 +203,96 @@ async fn forward(
         }
         Err(_) => text(StatusCode::GATEWAY_TIMEOUT, "upstream timeout"),
     }
+}
+
+async fn forward_translated(
+    gw: &Gateway,
+    up: &Upstream,
+    dir: Dir,
+    req: Request<Incoming>,
+) -> Response<ResBody> {
+    let (mut parts, body) = req.into_parts();
+    let Some(uri) = upstream_uri(&up.base_url, dir.target_endpoint(), parts.uri.query()) else {
+        return text(StatusCode::BAD_GATEWAY, "upstream error");
+    };
+    let tripped = Arc::new(AtomicBool::new(false));
+    let capped = CappedBody {
+        inner: body,
+        remaining: gw.max_body,
+        tripped: tripped.clone(),
+    };
+    let bytes = match capped.collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) if tripped.load(Ordering::Relaxed) => {
+            return text(StatusCode::PAYLOAD_TOO_LARGE, "body too large");
+        }
+        Err(_) => return text(StatusCode::BAD_GATEWAY, "upstream error"),
+    };
+    let (out, stream) = match translate::map_request(dir, &bytes) {
+        Ok(v) => v,
+        Err(_) => return text(StatusCode::BAD_REQUEST, "translation error"),
+    };
+
+    sanitize(&mut parts.headers);
+    parts.headers.remove(HOST);
+    parts.headers.remove(AUTHORIZATION);
+    parts.headers.remove(CONTENT_LENGTH);
+    parts.headers.remove(ACCEPT_ENCODING);
+    parts
+        .headers
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    parts
+        .headers
+        .insert(up.auth_name.clone(), up.auth_value.clone());
+    if dir.target_is_anthropic() {
+        parts.headers.insert(
+            HeaderName::from_static("anthropic-version"),
+            HeaderValue::from_static("2023-06-01"),
+        );
+    }
+    parts.uri = uri;
+    parts.method = Method::POST;
+    let req = Request::from_parts(parts, full(out));
+
+    match tokio::time::timeout(gw.upstream_header_timeout, gw.client.request(req)).await {
+        Ok(Ok(resp)) => {
+            let (mut parts, body) = resp.into_parts();
+            sanitize(&mut parts.headers);
+            parts.headers.remove(CONTENT_LENGTH);
+            let body = IdleBody::new(body, gw.upstream_idle_timeout);
+            if !parts.status.is_success() || parts.headers.contains_key(CONTENT_ENCODING) {
+                return Response::from_parts(parts, body.boxed());
+            }
+            if stream {
+                Response::from_parts(parts, TranslatingBody::new(body, dir).boxed())
+            } else {
+                let collected = match body.collect().await {
+                    Ok(c) => c.to_bytes(),
+                    Err(_) => return text(StatusCode::BAD_GATEWAY, "upstream error"),
+                };
+                match translate::map_response(dir, &collected) {
+                    Ok(mapped) => {
+                        parts
+                            .headers
+                            .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                        Response::from_parts(parts, full(mapped))
+                    }
+                    Err(_) => text(StatusCode::BAD_GATEWAY, "translation error"),
+                }
+            }
+        }
+        Ok(Err(e)) => {
+            eprintln!("upstream error: {e}");
+            text(StatusCode::BAD_GATEWAY, "upstream error")
+        }
+        Err(_) => text(StatusCode::GATEWAY_TIMEOUT, "upstream timeout"),
+    }
+}
+
+fn full(bytes: Vec<u8>) -> ResBody {
+    Full::new(Bytes::from(bytes))
+        .map_err(|e: std::convert::Infallible| -> BoxError { match e {} })
+        .boxed()
 }
 
 pub struct CappedBody {
@@ -253,6 +379,68 @@ where
 
     fn size_hint(&self) -> SizeHint {
         self.inner.size_hint()
+    }
+}
+
+struct TranslatingBody<B> {
+    inner: B,
+    xlate: SseXlate,
+    finished: bool,
+}
+
+impl<B> TranslatingBody<B> {
+    fn new(inner: B, dir: Dir) -> Self {
+        Self {
+            inner,
+            xlate: SseXlate::new(dir),
+            finished: false,
+        }
+    }
+}
+
+impl<B: Body<Data = Bytes> + Unpin> Body for TranslatingBody<B>
+where
+    B::Error: Into<BoxError>,
+{
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        loop {
+            if this.finished {
+                return Poll::Ready(None);
+            }
+            match ready!(Pin::new(&mut this.inner).poll_frame(cx)) {
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        let out = this.xlate.push(&data);
+                        if !out.is_empty() {
+                            return Poll::Ready(Some(Ok(Frame::data(Bytes::from(out)))));
+                        }
+                    }
+                }
+                Some(Err(e)) => return Poll::Ready(Some(Err(e.into()))),
+                None => {
+                    this.finished = true;
+                    let out = this.xlate.finish();
+                    return Poll::Ready(
+                        (!out.is_empty()).then(|| Ok(Frame::data(Bytes::from(out)))),
+                    );
+                }
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.finished
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::default()
     }
 }
 
@@ -356,6 +544,7 @@ mod tests {
                 base_url: "https://api.anthropic.com/".into(),
                 auth_header: "x-api-key".into(),
                 api_key: "sk-ant".into(),
+                protocol: None,
             },
         );
         providers.insert(
@@ -364,6 +553,7 @@ mod tests {
                 base_url: "https://api.openai.com".into(),
                 auth_header: "authorization".into(),
                 api_key: "sk-oai".into(),
+                protocol: None,
             },
         );
         build_routes(&providers).unwrap()
@@ -387,6 +577,7 @@ mod tests {
                 base_url: "https://x.test".into(),
                 auth_header: "not a header".into(),
                 api_key: "k".into(),
+                protocol: None,
             },
         );
         match build_routes(&providers) {
@@ -462,6 +653,35 @@ mod tests {
     }
 
     #[test]
+    fn translate_dir_decision_table() {
+        use Protocol::{Anthropic, Openai};
+        assert!(matches!(
+            translate_dir(Openai, "v1/chat/completions"),
+            Route::Passthrough
+        ));
+        assert!(matches!(
+            translate_dir(Anthropic, "v1/messages"),
+            Route::Passthrough
+        ));
+        assert!(matches!(
+            translate_dir(Openai, "v1/responses"),
+            Route::Passthrough
+        ));
+        assert!(matches!(
+            translate_dir(Openai, "v1/messages"),
+            Route::Translate(Dir::MessagesToChat)
+        ));
+        assert!(matches!(
+            translate_dir(Anthropic, "v1/chat/completions"),
+            Route::Translate(Dir::ChatToMessages)
+        ));
+        assert!(matches!(
+            translate_dir(Anthropic, "v1/responses"),
+            Route::Unsupported
+        ));
+    }
+
+    #[test]
     fn upstream_uri_preserves_query() {
         let u = upstream_uri("https://x.test", "v1/messages", Some("beta=true")).unwrap();
         assert_eq!(u.to_string(), "https://x.test/v1/messages?beta=true");
@@ -492,6 +712,40 @@ mod tests {
                 .is_err(),
             "expected idle timeout"
         );
+    }
+
+    struct Chunks(std::collections::VecDeque<Bytes>);
+
+    impl Body for Chunks {
+        type Data = Bytes;
+        type Error = BoxError;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+            Poll::Ready(self.0.pop_front().map(|b| Ok(Frame::data(b))))
+        }
+    }
+
+    #[tokio::test]
+    async fn translating_body_drives_stream() {
+        let chunks = Chunks(
+            [
+                Bytes::from("data: {\"id\":\"c1\",\"model\":\"g\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"),
+                Bytes::from("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"),
+            ]
+            .into(),
+        );
+        let out = TranslatingBody::new(chunks, Dir::MessagesToChat)
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let s = String::from_utf8(out.to_vec()).unwrap();
+        assert!(s.contains("event: message_start"));
+        assert!(s.contains("\"text\":\"hi\""));
+        assert!(s.contains("event: message_stop"));
     }
 
     #[tokio::test]

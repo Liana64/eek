@@ -1,5 +1,6 @@
 mod config;
 mod proxy;
+mod translate;
 
 use std::convert::Infallible;
 use std::sync::Arc;
